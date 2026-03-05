@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% from "macros.html" import log_card %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <form hx-get="/" hx-target="#logs-list" hx-trigger="submit" class="d-flex gap-2">
+            <input type="text" name="q" class="form-control" placeholder="Search keywords..." value="{{ q }}">
+            <input type="date" name="date" class="form-control" value="{{ filter_date }}">
+            <button type="submit" class="btn btn-outline-secondary">Search</button>
+            {% if q or filter_date %}
+            <a href="/" class="btn btn-outline-danger">Clear</a>
+            {% endif %}
+        </form>
+    </div>
+    <div class="col-md-4 text-end">
+        <a href="/entry/{{ today }}" class="btn btn-success">+ New Entry</a>
+    </div>
+</div>
+
+<div id="logs-list">
+    {% if logs %}
+        {% for log in logs %}
+            {{ log_card(log) }}
+        {% endfor %}
+    {% else %}
+        <div class="text-center text-muted py-5">
+            <p>No entries yet. <a href="/entry/{{ today }}">Write your first entry!</a></p>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

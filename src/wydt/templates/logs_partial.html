@@ -1,0 +1,11 @@
+{% from "macros.html" import log_card %}
+
+{% if logs %}
+    {% for log in logs %}
+        {{ log_card(log) }}
+    {% endfor %}
+{% else %}
+    <div class="text-center text-muted py-5">
+        <p>No entries found.</p>
+    </div>
+{% endif %}

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-8 mx-auto">
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <span class="date-header">{{ log.date.strftime('%A, %B %d, %Y') }}</span>
+                <a href="/" class="btn btn-sm btn-outline-secondary">Back</a>
+            </div>
+            <div class="card-body">
+                <form id="entry-form" method="POST" hx-post="/entry/{{ log.date.isoformat() }}" hx-target="#entry-content" hx-swap="innerHTML" hx-trigger="change delay:1s">
+                    <div class="mb-3">
+                        <label for="content" class="form-label">What did you do today?</label>
+                        <textarea 
+                            name="content" 
+                            id="content" 
+                            class="form-control" 
+                            rows="10"
+                            placeholder="Write about your day..."
+                        >{{ log.content }}</textarea>
+                        <div class="form-text">Content saves automatically 1 second after you stop typing.</div>
+                    </div>
+                </form>
+
+                <div id="entry-content">
+                    {% if log.summary %}
+                    <hr>
+                    <h6>Summary (AI)</h6>
+                    <p class="summary-text">{{ log.summary }}</p>
+                    {% endif %}
+                    {% if log.keywords %}
+                    <h6>Keywords</h6>
+                    <p class="keywords-text text-muted small">{{ log.keywords }}</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

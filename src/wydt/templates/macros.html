@@ -1,0 +1,19 @@
+{% macro log_card(log) %}
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+            <span class="date-header">{{ log.date.strftime('%A, %B %d, %Y') }}</span>
+            <a href="/entry/{{ log.date.isoformat() }}" class="btn btn-sm btn-outline-primary">Edit</a>
+        </div>
+        {% if log.summary %}
+        <p class="summary-text mb-2">{{ log.summary }}</p>
+        {% endif %}
+        {% if log.keywords %}
+        <p class="text-muted small mb-2">Tags: {{ log.keywords }}</p>
+        {% endif %}
+        <p class="mb-0 text-truncate" style="max-height: 3em; overflow: hidden;">
+            {{ log.content[:200] }}{% if log.content|length > 200 %}...{% endif %}
+        </p>
+    </div>
+</div>
+{% endmacro %}
