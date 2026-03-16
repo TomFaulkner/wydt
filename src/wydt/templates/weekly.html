@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% from "macros.html" import log_card %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-md-8">
+        <nav aria-label="Week navigation">
+            <div class="d-flex align-items-center gap-2">
+                {% if prev_week %}
+                <a href="/weekly/{{ prev_week.year }}/{{ prev_week.week_number }}" class="btn btn-outline-secondary btn-sm">&larr; Previous</a>
+                {% endif %}
+                
+                <div class="dropdown">
+                    <button class="btn btn-outline-primary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false">
+                        Week {{ summary.week_number }}, {{ summary.year }}
+                    </button>
+                    <ul class="dropdown-menu">
+                        {% for week in recent_weeks %}
+                        <li><a class="dropdown-item" href="/weekly/{{ week.year }}/{{ week.week_number }}">{{ week.label }}</a></li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                
+                {% if next_week %}
+                <a href="/weekly/{{ next_week.year }}/{{ next_week.week_number }}" class="btn btn-outline-secondary btn-sm">Next &rarr;</a>
+                {% endif %}
+            </div>
+        </nav>
+    </div>
+    <div class="col-md-4 text-end">
+        <div class="input-group input-group-sm">
+            <input type="date" id="jump-to-date" class="form-control" placeholder="Jump to date...">
+            <button class="btn btn-outline-secondary" type="button" onclick="jumpToWeek()">Go</button>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-2">
+            Week {{ summary.week_number }}, {{ summary.year }}
+            <small class="text-muted fs-5">({{ summary.start_date.strftime('%B %d') }} - {{ summary.end_date.strftime('%B %d, %Y') }})</small>
+        </h2>
+    </div>
+</div>
+
+<div id="weekly-summary-content">
+    {% include "weekly_summary_partial.html" %}
+</div>
+
+<div class="row mt-5">
+    <div class="col-12">
+        <h4 class="mb-3">Daily Entries</h4>
+        {% if logs %}
+            {% for log in logs %}
+                {{ log_card(log) }}
+            {% endfor %}
+        {% else %}
+            <div class="text-center text-muted py-5">
+                <p>No entries for this week yet.</p>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<script>
+function jumpToWeek() {
+    const dateInput = document.getElementById('jump-to-date');
+    const dateStr = dateInput.value;
+    if (dateStr) {
+        // Redirect to weekly view - the server will calculate the week
+        const date = new Date(dateStr);
+        // Get ISO week number
+        const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+        const dayNum = d.getUTCDay() || 7;
+        d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+        const yearStart = new Date(Date.UTC(d.getUTCFullYear(),0,1));
+        const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1)/7);
+        const year = d.getUTCFullYear();
+        window.location.href = `/weekly/${year}/${weekNo}`;
+    }
+}
+
+document.getElementById('jump-to-date').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') {
+        jumpToWeek();
+    }
+});
+</script>
+{% endblock %}

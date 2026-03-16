@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="row mb-4">
-    <div class="col-md-8">
+    <div class="col-md-6">
         <form hx-get="/" hx-target="#logs-list" hx-trigger="submit" class="d-flex gap-2">
             <input type="text" name="q" class="form-control" placeholder="Search keywords..." value="{{ q }}">
             <input type="date" name="date" class="form-control" value="{{ filter_date }}">
@@ -13,7 +13,8 @@
             {% endif %}
         </form>
     </div>
-    <div class="col-md-4 text-end">
+    <div class="col-md-6 text-end">
+        <a href="/weekly/{{ current_year }}/{{ current_week }}" class="btn btn-outline-primary me-2">This Week</a>
         <a href="/entry/{{ today }}" class="btn btn-success">+ New Entry</a>
     </div>
 </div>

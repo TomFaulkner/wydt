@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
 
 logging.basicConfig(
@@ -8,8 +8,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-from .models import db, DailyLog
-from .llm import generate_summary_and_keywords
+from .models import db, DailyLog, WeeklySummary
+from .llm import generate_summary_and_keywords, generate_weekly_summary
 from .auth import require_auth
 
 
@@ -27,7 +27,13 @@ def create_app():
 
     @app.context_processor
     def inject_today():
-        return {"today": date.today().isoformat()}
+        today = date.today()
+        year, week, _ = today.isocalendar()
+        return {
+            "today": today.isoformat(),
+            "current_year": year,
+            "current_week": week,
+        }
 
     @app.route("/")
     @require_auth
@@ -147,6 +153,164 @@ def create_app():
         db.session.commit()
 
         return jsonify(log.to_dict()), 201
+
+    @app.route("/weekly/<int:year>/<int:week_number>")
+    @require_auth
+    def weekly_summary(year, week_number):
+        # Validate week number
+        if week_number < 1 or week_number > 53:
+            return "Invalid week number", 400
+
+        # Get or create the weekly summary
+        summary = WeeklySummary.get_or_create(year, week_number)
+
+        # Get daily logs for this week
+        logs = (
+            DailyLog.query.filter(
+                DailyLog.date >= summary.start_date, DailyLog.date <= summary.end_date
+            )
+            .order_by(DailyLog.date.asc())
+            .all()
+        )
+
+        # Get recent weeks for the dropdown
+        recent_weeks = _get_recent_weeks()
+
+        return render_template(
+            "weekly.html",
+            summary=summary,
+            logs=logs,
+            recent_weeks=recent_weeks,
+            prev_week=_get_adjacent_week(year, week_number, -1),
+            next_week=_get_adjacent_week(year, week_number, 1),
+        )
+
+    @app.route("/api/weekly/<int:year>/<int:week_number>/regenerate", methods=["POST"])
+    @require_auth
+    def api_regenerate_weekly_summary(year, week_number):
+        # Validate week number
+        if week_number < 1 or week_number > 53:
+            return jsonify({"error": "Invalid week number"}), 400
+
+        # Get or create the weekly summary
+        weekly_summary = WeeklySummary.get_or_create(year, week_number)
+
+        # Get daily logs for this week
+        logs = (
+            DailyLog.query.filter(
+                DailyLog.date >= weekly_summary.start_date,
+                DailyLog.date <= weekly_summary.end_date,
+            )
+            .order_by(DailyLog.date.asc())
+            .all()
+        )
+
+        # Only generate if we have logs with content
+        logs_with_content = [log for log in logs if log.content.strip()]
+
+        if logs_with_content:
+            logs_data = [
+                {
+                    "date": log.date.isoformat(),
+                    "content": log.content,
+                    "summary": log.summary,
+                    "keywords": log.keywords,
+                }
+                for log in logs_with_content
+            ]
+
+            result = generate_weekly_summary(logs_data)
+
+            weekly_summary.summary = result["summary"]
+            weekly_summary.themes = result["themes"]
+            weekly_summary.accomplishments = result["accomplishments"]
+            weekly_summary.highlights = result["highlights"]
+            weekly_summary.references = result["references"]
+            weekly_summary.updated_at = datetime.utcnow()
+            db.session.commit()
+
+        if request.headers.get("HX-Request"):
+            return render_template(
+                "weekly_summary_partial.html",
+                summary=weekly_summary,
+                logs=logs,
+            )
+
+        return jsonify(weekly_summary.to_dict())
+
+    @app.route("/api/weeks/recent")
+    @require_auth
+    def api_recent_weeks():
+        """Get list of recent weeks with entries for the dropdown."""
+        weeks = _get_recent_weeks()
+        return jsonify(weeks)
+
+    def _get_recent_weeks():
+        """Get recent weeks (with entries or recent dates) for the dropdown."""
+        weeks = []
+        today = date.today()
+
+        # Get weeks that have entries
+        logs_with_weeks = (
+            db.session.query(
+                db.func.strftime("%Y", DailyLog.date).label("year"),
+                db.func.strftime("%W", DailyLog.date).label("week"),
+            )
+            .distinct()
+            .order_by(
+                db.func.strftime("%Y", DailyLog.date).desc(),
+                db.func.strftime("%W", DailyLog.date).desc(),
+            )
+            .limit(12)
+            .all()
+        )
+
+        seen = set()
+        for year_str, week_str in logs_with_weeks:
+            year = int(year_str)
+            # SQLite's %W gives 0-53, but Python's isocalendar uses 1-53
+            week = int(week_str) + 1 if week_str else 1
+            key = (year, week)
+            if key not in seen:
+                seen.add(key)
+                try:
+                    start = date.fromisocalendar(year, week, 1)
+                    end = start + timedelta(days=6)
+                    weeks.append(
+                        {
+                            "year": year,
+                            "week_number": week,
+                            "label": f"Week {week}, {year} ({start.strftime('%b %d')} - {end.strftime('%b %d')})",
+                        }
+                    )
+                except ValueError:
+                    pass
+
+        # Add current week if not already included
+        current_year, current_week, _ = today.isocalendar()
+        if (current_year, current_week) not in seen:
+            start = date.fromisocalendar(current_year, current_week, 1)
+            end = start + timedelta(days=6)
+            weeks.insert(
+                0,
+                {
+                    "year": current_year,
+                    "week_number": current_week,
+                    "label": f"Week {current_week}, {current_year} ({start.strftime('%b %d')} - {end.strftime('%b %d')}) [Current]",
+                },
+            )
+
+        return weeks
+
+    def _get_adjacent_week(year, week_number, direction):
+        """Get the previous or next week."""
+        try:
+            current_date = date.fromisocalendar(year, week_number, 1)
+            new_date = current_date + timedelta(weeks=direction)
+            new_year, new_week, _ = new_date.isocalendar()
+            return {"year": new_year, "week_number": new_week}
+        except ValueError:
+            return None
 
     @app.route("/mcp", methods=["POST"])
     def mcp():
