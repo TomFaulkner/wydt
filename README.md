@@ -2,6 +2,13 @@
 
 A personal daily journal/tracker webapp with LLM integration.
 
+## Commands
+systemctl --user start wydt.service   # Start
+systemctl --user stop wydt.service    # Stop
+systemctl --user restart wydt.service # Restart
+systemctl --user status wydt.service # Check status
+journalctl --user-unit=wydt.service   # View logs
+
 ## Note
 This is vibe coded, I haven't read the code.
 It might be insecure, it might even kick your dog.
