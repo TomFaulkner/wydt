@@ -88,7 +88,7 @@ def create_app():
             db.session.commit()
 
             if request.headers.get("HX-Request"):
-                return render_template("entry.html", log=log)
+                return render_template("entry_partial.html", log=log)
             return redirect(url_for("index"))
 
         return render_template("entry.html", log=log)

@@ -1,0 +1,9 @@
+{% if log.summary %}
+<hr>
+<h6>Summary (AI)</h6>
+<p class="summary-text">{{ log.summary }}</p>
+{% endif %}
+{% if log.keywords %}
+<h6>Keywords</h6>
+<p class="keywords-text text-muted small">{{ log.keywords }}</p>
+{% endif %}
