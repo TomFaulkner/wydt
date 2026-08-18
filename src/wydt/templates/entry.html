@@ -5,8 +5,9 @@
     <div class="col-md-8 mx-auto">
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
+                <a href="/entry/{{ prev_date.isoformat() }}" class="btn btn-sm btn-outline-secondary">&larr; Prev</a>
                 <span class="date-header">{{ log.date.strftime('%A, %B %d, %Y') }}</span>
-                <a href="/" class="btn btn-sm btn-outline-secondary">Back</a>
+                <a href="/entry/{{ next_date.isoformat() }}" class="btn btn-sm btn-outline-secondary">Next &rarr;</a>
             </div>
             <div class="card-body">
                 <form id="entry-form" method="POST" hx-post="/entry/{{ log.date.isoformat() }}" hx-target="#entry-content" hx-swap="innerHTML" hx-trigger="change delay:1s">
@@ -23,11 +24,29 @@
                     </div>
                 </form>
 
+                {% if prev_log and prev_log.content %}
+                <div class="mb-3">
+                    <h6 class="text-muted">Previous Day ({{ prev_log.date.strftime('%A, %B %d, %Y') }})</h6>
+                    <div class="p-3 bg-light rounded">
+                        <p class="mb-0">{{ prev_log.content | replace('\n', '<br>') | safe }}</p>
+                    </div>
+                </div>
+                {% endif %}
+
                 <div id="entry-content">
                     {% if log.summary %}
                     <hr>
                     <h6>Summary (AI)</h6>
                     <p class="summary-text">{{ log.summary }}</p>
+                    {% elif log.content and log.summary_error %}
+                    <hr>
+                    <div class="alert alert-warning py-2 px-3 small mb-2">
+                      <strong>AI summary failed</strong><br>
+                      {{ log.summary_error }}
+                    </div>
+                    {% elif log.content and not log.summary %}
+                    <hr>
+                    <p class="text-muted small mb-1"><em>AI summary not generated</em></p>
                     {% endif %}
                     {% if log.keywords %}
                     <h6>Keywords</h6>

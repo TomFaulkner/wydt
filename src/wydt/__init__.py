@@ -1,7 +1,7 @@
 import os
 import logging
 from datetime import date, datetime, timedelta
-from flask import Flask, render_template, request, jsonify, redirect, url_for, Response
+from flask import Flask, render_template, request, jsonify, redirect, url_for
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,8 +22,31 @@ def create_app():
 
     db.init_app(app)
 
+    def _ensure_summary_error_columns():
+        """Ensure summary_error columns exist (for SQLite after adding the field)."""
+        from sqlalchemy import inspect, text
+
+        try:
+            inspector = inspect(db.engine)
+            for table in ("daily_logs", "weekly_summaries"):
+                if table in inspector.get_table_names():
+                    cols = [c["name"] for c in inspector.get_columns(table)]
+                    if "summary_error" not in cols:
+                        col_sql = "TEXT NOT NULL DEFAULT ''"
+                        db.session.execute(
+                            text(f"ALTER TABLE {table} ADD COLUMN summary_error {col_sql}")
+                        )
+                        db.session.commit()
+        except Exception:
+            # Column may already exist or DB is not SQLite, etc.
+            try:
+                db.session.rollback()
+            except Exception:
+                pass
+
     with app.app_context():
         db.create_all()
+        _ensure_summary_error_columns()
 
     @app.context_processor
     def inject_today():
@@ -75,15 +98,22 @@ def create_app():
             return "Invalid date format", 400
 
         log = DailyLog.get_or_create(log_date)
+        prev_log = DailyLog.query.filter_by(date=log_date - timedelta(days=1)).first()
+        prev_date = log_date - timedelta(days=1)
+        next_date = log_date + timedelta(days=1)
 
         if request.method == "POST":
             content = request.form.get("content", "")
             log.content = content
             if content.strip():
-                log.summary, log.keywords = generate_summary_and_keywords(content)
+                summary, keywords, error = generate_summary_and_keywords(content)
+                log.summary = summary
+                log.keywords = keywords
+                log.summary_error = error or ""
             else:
                 log.summary = ""
                 log.keywords = ""
+                log.summary_error = ""
             log.updated_at = datetime.utcnow()
             db.session.commit()
 
@@ -91,7 +121,7 @@ def create_app():
                 return render_template("entry_partial.html", log=log)
             return redirect(url_for("index"))
 
-        return render_template("entry.html", log=log)
+        return render_template("entry.html", log=log, prev_log=prev_log, prev_date=prev_date, next_date=next_date)
 
     @app.route("/api/logs", methods=["GET"])
     @require_auth
@@ -148,7 +178,12 @@ def create_app():
         log = DailyLog.get_or_create(log_date)
         log.content = data["content"]
         if data["content"].strip():
-            log.summary, log.keywords = generate_summary_and_keywords(data["content"])
+            summary, keywords, error = generate_summary_and_keywords(data["content"])
+            log.summary = summary
+            log.keywords = keywords
+            log.summary_error = error or ""
+        else:
+            log.summary_error = ""
         log.updated_at = datetime.utcnow()
         db.session.commit()
 
@@ -221,11 +256,16 @@ def create_app():
 
             result = generate_weekly_summary(logs_data)
 
-            weekly_summary.summary = result["summary"]
-            weekly_summary.themes = result["themes"]
-            weekly_summary.accomplishments = result["accomplishments"]
-            weekly_summary.highlights = result["highlights"]
-            weekly_summary.references = result["references"]
+            weekly_summary.summary = result.get("summary", "")
+            weekly_summary.themes = result.get("themes", "")
+            weekly_summary.accomplishments = result.get("accomplishments", "")
+            weekly_summary.highlights = result.get("highlights", "")
+            weekly_summary.references = result.get("references", "")
+            weekly_summary.summary_error = result.get("error") or ""
+            weekly_summary.updated_at = datetime.utcnow()
+            db.session.commit()
+        else:
+            weekly_summary.summary_error = ""
             weekly_summary.updated_at = datetime.utcnow()
             db.session.commit()
 

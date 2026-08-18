@@ -11,3 +11,4 @@ wheels/
 instance/
 wydt.db
 .env
+logs

@@ -54,7 +54,10 @@ OPENAI_API_KEY=your_api_key_here
 # Or use a different OpenAI-compatible endpoint (e.g., xAI Grok)
 LLM_API_KEY=your_api_key_here
 LLM_BASE_URL=https://api.x.ai/v1
-LLM_MODEL=grok-beta
+# LLM_MODEL=grok-4.3   # Optional. Leave unset (recommended) to auto-select
+                       # the lowest-cost model available to your account via /v1/models.
+                       # Current cheapest often include grok-4.3, grok-4.20-reasoning,
+                       # or grok-4.20-non-reasoning (prices are similar; check your console).
 ```
 
 ### Environment Variables
@@ -65,7 +68,7 @@ LLM_MODEL=grok-beta
 | `OPENAI_API_KEY` | OpenAI API key | None |
 | `LLM_API_KEY` | Override API key for LLM | Uses `OPENAI_API_KEY` |
 | `LLM_BASE_URL` | OpenAI-compatible endpoint | None (uses OpenAI) |
-| `LLM_MODEL` | Model to use for summaries | `gpt-4o-mini` |
+| `LLM_MODEL` | Specific model to use. **Leave unset** to let the app automatically query `/v1/models` and pick the lowest-cost model available on your account (prefers grok-4.3, 4.20-reasoning/non-reasoning variants, build, etc. based on current pricing). | Auto-discovered (grok-4.3 fallback for xAI) |
 | `DATABASE_URL` | SQLAlchemy database URL | `sqlite:///wydt.db` |
 
 ## Running

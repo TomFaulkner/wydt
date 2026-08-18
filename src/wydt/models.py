@@ -12,6 +12,7 @@ class DailyLog(db.Model):
     content = db.Column(db.Text, nullable=False, default="")
     summary = db.Column(db.Text, nullable=False, default="")
     keywords = db.Column(db.Text, nullable=False, default="")
+    summary_error = db.Column(db.Text, nullable=False, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(
         db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -24,6 +25,7 @@ class DailyLog(db.Model):
             "content": self.content,
             "summary": self.summary,
             "keywords": self.keywords,
+            "summary_error": self.summary_error,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }
@@ -51,6 +53,7 @@ class WeeklySummary(db.Model):
     accomplishments = db.Column(db.Text, nullable=False, default="")
     highlights = db.Column(db.Text, nullable=False, default="")
     references = db.Column(db.Text, nullable=False, default="")
+    summary_error = db.Column(db.Text, nullable=False, default="")
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(
         db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -70,6 +73,7 @@ class WeeklySummary(db.Model):
             "accomplishments": self.accomplishments,
             "highlights": self.highlights,
             "references": self.references,
+            "summary_error": self.summary_error,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
         }

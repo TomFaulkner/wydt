@@ -8,6 +8,68 @@ httpx_logger.setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 _client = None
+_cheapest_model = None
+
+
+def _discover_lowest_cost_model() -> str | None:
+    """Query the /v1/models endpoint (OpenAI-compatible) and pick a low-cost / lowest-end model.
+
+    Prefers grok-build (cheapest) then current flagships.
+    This helps always use the cheapest suitable model available to your account
+    instead of relying on a potentially outdated or expensive LLM_MODEL name.
+    """
+    try:
+        from openai import OpenAI
+
+        api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return None
+
+        base_url = os.getenv("LLM_BASE_URL", "https://api.x.ai/v1").rstrip("/")
+        # Ensure proper /v1 suffix for x.ai
+        if "api.x.ai" in base_url and not base_url.rstrip("/").endswith("/v1"):
+            base_url = base_url.rstrip("/") + "/v1"
+
+        temp_client = OpenAI(api_key=api_key, base_url=base_url)
+        resp = temp_client.models.list()
+        ids = [m.id for m in getattr(resp, "data", [])]
+        if not ids:
+            return None
+
+        logger.info(f"Discovered {len(ids)} models via API")
+
+        # Preference for lowest-cost models based on current xAI pricing.
+        # grok-build-0.1 is the cheapest ($1/$2). Then grok-4.3 and 4.20 variants
+        # (all ~$1.25/$2.50). Prioritize build first per request.
+        priority_checks = [
+            lambda i: "build" in i.lower() or "code-fast" in i.lower(),
+            lambda i: "grok-4.3" in i.lower(),
+            lambda i: "4.20" in i and "reasoning" in i.lower(),
+            lambda i: "grok-4.20-reasoning" in i.lower(),
+            lambda i: "4.20" in i and "non-reasoning" in i.lower(),
+            lambda i: "grok-4.20-non-reasoning" in i.lower(),
+            lambda i: "fast-non-reasoning" in i.lower(),
+            lambda i: "fast" in i.lower(),
+            lambda i: "non-reasoning" in i.lower(),
+            lambda i: "mini" in i.lower(),
+            lambda i: "grok-3" in i.lower(),
+        ]
+
+        for check in priority_checks:
+            for model_id in ids:
+                if check(model_id):
+                    logger.info(f"Auto-selected lowest-cost model: {model_id}")
+                    return model_id
+
+        # Fallback: prefer grok-4.3 or any recent grok-4.x if present, else first
+        for preferred in ("grok-4.3", "grok-4.20", "grok-4"):
+            for model_id in ids:
+                if preferred in model_id.lower():
+                    return model_id
+        return ids[0] if ids else None
+    except Exception as e:
+        logger.warning(f"Could not discover models list for lowest-cost selection: {e}")
+        return None
 
 
 def _get_client():
@@ -22,7 +84,7 @@ def _get_client():
             base_url = base_url.replace("http://", "https://", 1)
             logger.warning(f"Changed HTTP to HTTPS for LLM_BASE_URL: {base_url}")
 
-        logger.info(f"Initializing OpenAI client:")
+        logger.info("Initializing OpenAI client:")
         logger.info(f"  base_url: {base_url}")
         logger.info(f"  model: {_get_model()}")
         logger.info(f"  api_key: {api_key[:10] if api_key else 'None'}...")
@@ -32,26 +94,53 @@ def _get_client():
 
 
 def _get_model():
-    model = os.getenv("LLM_MODEL")
-    if model:
-        return model
-    base_url = os.getenv("LLM_BASE_URL", "")
-    if "x.ai" in base_url:
-        return "grok-beta"
-    return "gpt-4o-mini"
+    explicit = os.getenv("LLM_MODEL", "").strip()
+    if explicit:
+        return explicit
+
+    # No explicit LLM_MODEL set -> dynamically pick the lowest-cost model
+    # available to this account via the models API. This is the recommended
+    # way to "always use the lowest end model".
+    global _cheapest_model
+    if _cheapest_model is None:
+        discovered = _discover_lowest_cost_model()
+        if discovered:
+            _cheapest_model = discovered
+        else:
+            # Sensible fallback based on base URL
+            base_url = os.getenv("LLM_BASE_URL", "")
+            if "x.ai" in base_url:
+                _cheapest_model = "grok-build-0.1"
+            else:
+                _cheapest_model = "gpt-4o-mini"
+    return _cheapest_model
 
 
-def generate_summary_and_keywords(content: str) -> tuple[str, str]:
+def _get_reasoning_effort(model: str) -> str | None:
+    """For basic summaries, use 'low' reasoning effort on models that support it.
+    This reduces cost and latency for simple tasks like journal summaries.
+    Returns None for models that don't use/support it (e.g. build variants).
+    """
+    m = model.lower()
+    if "build" in m or "code-fast" in m:
+        return None
+    # grok-4.3, grok-4.20 etc. support reasoning_effort
+    if any(k in m for k in ["4.3", "4.20", "grok-4"]):
+        return "low"
+    return None
+
+
+def generate_summary_and_keywords(content: str) -> tuple[str, str, str | None]:
     if not content or not content.strip():
-        return ("", "")
+        return ("", "", None)
     try:
         client = _get_client()
         model = _get_model()
         logger.info(f"Generating summary and keywords with model: {model}")
 
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
+        kwargs = {
+            "model": model,
+            "messages": [
                 {
                     "role": "system",
                     "content": """You are a helpful assistant that processes daily journal entries.
@@ -68,8 +157,11 @@ KEYWORDS: <keyword1>, <keyword2>, <keyword3>, ...""",
                     "content": f"Process this daily log:\n\n{content}",
                 },
             ],
-            max_tokens=150,
-        )
+            "max_tokens": 150,
+        }
+        if effort := _get_reasoning_effort(model):
+            kwargs["extra_body"] = {"reasoning_effort": effort}
+        response = client.chat.completions.create(**kwargs)
         result = response.choices[0].message.content.strip()
 
         summary = ""
@@ -85,14 +177,14 @@ KEYWORDS: <keyword1>, <keyword2>, <keyword3>, ...""",
             summary = result
 
         logger.info(f"Generated summary: {summary[:50]}..., keywords: {keywords}")
-        return (summary, keywords)
+        return (summary, keywords, None)
     except Exception as e:
         logger.exception(f"Error generating summary: {e}")
-        return ("", "")
+        return ("", "", str(e))
 
 
 def generate_summary(content: str) -> str:
-    summary, _ = generate_summary_and_keywords(content)
+    summary, _, _ = generate_summary_and_keywords(content)
     return summary
 
 
@@ -113,6 +205,7 @@ def generate_weekly_summary(logs_data: list[dict]) -> dict:
             "accomplishments": "",
             "highlights": "",
             "references": "",
+            "error": None,
         }
 
     try:
@@ -128,9 +221,9 @@ def generate_weekly_summary(logs_data: list[dict]) -> dict:
             ]
         )
 
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
+        kwargs = {
+            "model": model,
+            "messages": [
                 {
                     "role": "system",
                     "content": """You are a helpful assistant that creates weekly summaries from daily journal entries.
@@ -160,8 +253,11 @@ REFERENCES: <reference1>, <reference2>, ... (or "None" if no identifiers found)"
                     "content": f"Create a weekly summary from these daily entries:\n\n{logs_text}",
                 },
             ],
-            max_tokens=500,
-        )
+            "max_tokens": 500,
+        }
+        if effort := _get_reasoning_effort(model):
+            kwargs["extra_body"] = {"reasoning_effort": effort}
+        response = client.chat.completions.create(**kwargs)
         result = response.choices[0].message.content.strip()
 
         # Parse the response
@@ -222,6 +318,7 @@ REFERENCES: <reference1>, <reference2>, ... (or "None" if no identifiers found)"
             output["references"] = ""
 
         logger.info(f"Generated weekly summary: {output['summary'][:50]}...")
+        output["error"] = None
         return output
 
     except Exception as e:
@@ -232,4 +329,5 @@ REFERENCES: <reference1>, <reference2>, ... (or "None" if no identifiers found)"
             "accomplishments": "",
             "highlights": "",
             "references": "",
+            "error": str(e),
         }

@@ -2,6 +2,15 @@
 <hr>
 <h6>Summary (AI)</h6>
 <p class="summary-text">{{ log.summary }}</p>
+{% elif log.content and log.summary_error %}
+<hr>
+<div class="alert alert-warning py-2 px-3 small mb-2">
+  <strong>AI summary failed</strong><br>
+  {{ log.summary_error }}
+</div>
+{% elif log.content and not log.summary %}
+<hr>
+<p class="text-muted small mb-1"><em>AI summary not generated</em></p>
 {% endif %}
 {% if log.keywords %}
 <h6>Keywords</h6>

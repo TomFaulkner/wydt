@@ -7,6 +7,10 @@
         </div>
         {% if log.summary %}
         <p class="summary-text mb-2">{{ log.summary }}</p>
+        {% elif log.content and log.summary_error %}
+        <p class="text-warning small mb-1"><em>⚠ AI summary failed</em></p>
+        {% elif log.content and not log.summary %}
+        <p class="text-muted small mb-1"><em>AI summary not generated</em></p>
         {% endif %}
         {% if log.keywords %}
         <p class="text-muted small mb-2">Tags: {{ log.keywords }}</p>

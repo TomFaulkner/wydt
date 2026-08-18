@@ -251,7 +251,12 @@ def create(content: str, date: Optional[date], regenerate: bool):
         log.content = content
         
         if regenerate and content.strip():
-            log.summary, log.keywords = generate_summary_and_keywords(content)
+            summary, keywords, error = generate_summary_and_keywords(content)
+            log.summary = summary
+            log.keywords = keywords
+            log.summary_error = error or ""
+        else:
+            log.summary_error = ""
         
         log.updated_at = datetime.utcnow()
         get_db().session.commit()
@@ -260,6 +265,8 @@ def create(content: str, date: Optional[date], regenerate: bool):
         
         if log.summary:
             click.echo(f"  Summary: {log.summary}")
+        elif log.summary_error:
+            click.echo(f"  ⚠ Summary generation failed: {log.summary_error}")
         
         if log.keywords:
             click.echo(f"  Keywords: {log.keywords}")
