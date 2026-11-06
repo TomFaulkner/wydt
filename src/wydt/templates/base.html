@@ -11,6 +11,20 @@
         .card { box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         .summary-text { color: #6c757d; font-style: italic; }
         .date-header { font-weight: 600; }
+        .saved-dot {
+            display: inline-block;
+            width: .6rem;
+            height: .6rem;
+            margin-left: .5rem;
+            vertical-align: middle;
+            border-radius: 50%;
+            background-color: #198754;
+            transition: opacity .2s ease-in-out, transform .2s ease-in-out;
+        }
+        .saved-dot.is-unsaved {
+            opacity: 0;
+            transform: scale(.4);
+        }
     </style>
 </head>
 <body>
@@ -26,5 +40,6 @@
     <div class="container">
         {% block content %}{% endblock %}
     </div>
+    {% block scripts %}{% endblock %}
 </body>
 </html>

@@ -12,7 +12,7 @@
             <div class="card-body">
                 <form id="entry-form" method="POST" hx-post="/entry/{{ log.date.isoformat() }}" hx-target="#entry-content" hx-swap="innerHTML" hx-trigger="change delay:1s">
                     <div class="mb-3">
-                        <label for="content" class="form-label">What did you do today?</label>
+                        <label for="content" class="form-label">What did you do today?<span id="saved-indicator" class="saved-dot" role="status" title="Saved" aria-label="Saved"></span></label>
                         <textarea 
                             name="content" 
                             id="content" 
@@ -20,13 +20,16 @@
                             rows="10"
                             placeholder="Write about your day..."
                         >{{ log.content }}</textarea>
-                        <div class="form-text">Content saves automatically 1 second after you stop typing.</div>
+                        <div class="form-text">Changes save automatically about a second after you click or tab away from the text area.</div>
                     </div>
                 </form>
 
                 {% if prev_log and prev_log.content %}
                 <div class="mb-3">
-                    <h6 class="text-muted">Previous Day ({{ prev_log.date.strftime('%A, %B %d, %Y') }})</h6>
+                    <h6 class="text-muted">
+                        {% if prev_log.date == prev_date %}Previous Day{% else %}Last Entry{% endif %}
+                        <a href="/entry/{{ prev_log.date.isoformat() }}" class="text-muted">({{ prev_log.date.strftime('%A, %B %d, %Y') }})</a>
+                    </h6>
                     <div class="p-3 bg-light rounded">
                         <p class="mb-0">{{ prev_log.content | replace('\n', '<br>') | safe }}</p>
                     </div>
@@ -57,4 +60,41 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    var form = document.getElementById('entry-form');
+    var textarea = document.getElementById('content');
+    var dot = document.getElementById('saved-indicator');
+    if (!form || !textarea || !dot) return;
+
+    var sentValue = textarea.value;
+
+    function markSaved() {
+        dot.classList.remove('is-unsaved');
+        dot.title = 'Saved';
+    }
+
+    textarea.addEventListener('input', function () {
+        dot.classList.add('is-unsaved');
+        dot.title = 'Unsaved changes';
+    });
+
+    form.addEventListener('htmx:beforeRequest', function () {
+        sentValue = textarea.value;
+    });
+
+    form.addEventListener('htmx:afterRequest', function (evt) {
+        if (!evt.detail.successful) return;
+        if (textarea.value === sentValue) {
+            markSaved();
+        } else {
+            // Typed while the last save was in flight — queue another one.
+            htmx.trigger(form, 'change');
+        }
+    });
+})();
+</script>
 {% endblock %}

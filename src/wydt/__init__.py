@@ -19,6 +19,8 @@ def create_app():
         "DATABASE_URL", "sqlite:///wydt.db"
     )
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    # Pick up template edits without restarting the server.
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
 
     db.init_app(app)
 
@@ -98,7 +100,17 @@ def create_app():
             return "Invalid date format", 400
 
         log = DailyLog.get_or_create(log_date)
-        prev_log = DailyLog.query.filter_by(date=log_date - timedelta(days=1)).first()
+        # Show the most recent earlier day that actually has content, so e.g.
+        # Monday falls back to Friday when the weekend is empty.
+        prev_log = (
+            DailyLog.query.filter(
+                DailyLog.date < log_date,
+                DailyLog.content.isnot(None),
+                DailyLog.content != "",
+            )
+            .order_by(DailyLog.date.desc())
+            .first()
+        )
         prev_date = log_date - timedelta(days=1)
         next_date = log_date + timedelta(days=1)
 
