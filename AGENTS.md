@@ -18,7 +18,8 @@ uv run ruff check src/         # Lint
 
 - **Flask app factory**: `src/wydt/__init__.py:create_app()` — all routes defined inline
 - **CLI**: `src/wydt/cli.py` — Click-based, entrypoint `wydt`
-- **Models**: `src/wydt/models.py` — `DailyLog`, `WeeklySummary` (SQLAlchemy + SQLite)
+- **Models**: `src/wydt/models.py` — `DailyLog`, `WeeklySummary`, `Prompt` (SQLAlchemy + SQLite)
+- **Prompts**: stored in the `prompts` table (keys `daily_summary`, `daily_summary_user`, `weekly_summary`, `weekly_summary_user`, `weekly_log_entry`), editable from `/prompts`. `DEFAULT_PROMPTS` in `models.py` only seeds new rows and supplies a fallback when there's no DB available; `render_prompt()` fills `{placeholders}` in the user-message templates.
 - **LLM**: `src/wydt/llm.py` — OpenAI-compatible, env-configurable
 - **MCP**: `src/wydt/mcp.py` — stdin/stdout and HTTP `/mcp` endpoint
 - **Templates**: `src/wydt/templates/` — HTML + HTMX + Bootstrap 5
@@ -37,7 +38,7 @@ The `entry` route (`__init__.py:69`) demonstrates this — POST with HTMX return
 
 - `.env` loaded by `cli.py` via `python-dotenv` (line 50)
 - Flask `__init__.py` does **not** load `.env` — relies on env vars being set externally
-- Key vars: `WYDT_PASSWORD`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `DATABASE_URL`
+- Key vars: `WYDT_PASSWORD`, `OPENCODE_API_KEY`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`, `DATABASE_URL`
 
 ## Toolchain
 

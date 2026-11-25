@@ -1,5 +1,6 @@
-import os
 import logging
+import os
+import uuid
 
 logging.basicConfig(level=logging.DEBUG)
 httpx_logger = logging.getLogger("httpx")
@@ -9,67 +10,162 @@ logger = logging.getLogger(__name__)
 
 _client = None
 _cheapest_model = None
+_reasoning_effort_supported = False
+_session_id = None
+
+# OpenCode Console inference API - OpenAI-compatible (chat/completions, /models).
+# Model catalog: https://opencode.ai/docs/console/models
+DEFAULT_BASE_URL = "https://opencode.ai/inference/v1"
+
+# Each daily log is truncated to this many characters before it goes into the
+# weekly summary request.
+_WEEKLY_LOG_CHARS = 500
 
 
-def _discover_lowest_cost_model() -> str | None:
-    """Query the /v1/models endpoint (OpenAI-compatible) and pick a low-cost / lowest-end model.
+def _get_api_key() -> str | None:
+    """Console key first, then the generic OpenAI-compatible vars."""
+    return (
+        os.getenv("OPENCODE_API_KEY")
+        or os.getenv("LLM_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+    )
 
-    Prefers grok-build (cheapest) then current flagships.
-    This helps always use the cheapest suitable model available to your account
-    instead of relying on a potentially outdated or expensive LLM_MODEL name.
+
+def _get_base_url() -> str:
+    base_url = os.getenv("LLM_BASE_URL", "").strip().rstrip("/")
+
+    if base_url.startswith("http://"):
+        base_url = base_url.replace("http://", "https://", 1)
+        logger.warning(f"Changed HTTP to HTTPS for LLM_BASE_URL: {base_url}")
+
+    return base_url or DEFAULT_BASE_URL
+
+
+def _allow_training_models() -> bool:
+    return os.getenv("LLM_ALLOW_TRAINING_MODELS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _allow_free_models() -> bool:
+    return os.getenv("LLM_ALLOW_FREE_MODELS", "").strip().lower() in ("1", "true", "yes")
+
+
+def _rank_candidates(models: list) -> list[tuple[str, float, bool]]:
+    """Turn /v1/models entries into (id, input+output price per 1M tokens, supports reasoning effort).
+
+    The OpenCode inference list carries models.dev pricing, so the cheapest model
+    is picked by real cost instead of guessing from the model name. Only chat
+    models are considered, and anything without pricing can't be ranked.
+    """
+    candidates: list[tuple[str, float, bool]] = []
+
+    for m in models:
+        extra = getattr(m, "model_extra", None) or {}
+        if extra.get("type", "chat") != "chat":
+            continue
+
+        text = (extra.get("cost") or {}).get("text") or {}
+        input_price = (text.get("input") or {}).get("price")
+        output_price = (text.get("output") or {}).get("price")
+        if input_price is None or output_price is None:
+            continue
+
+        # Contributor/free tiers can train on requests; journal entries
+        # shouldn't go to them unless explicitly allowed.
+        go = extra.get("go") or {}
+        if go.get("training") and not _allow_training_models():
+            continue
+
+        reasoning = (extra.get("capabilities") or {}).get("reasoning") or {}
+        candidates.append(
+            (m.id, float(input_price) + float(output_price), bool(reasoning.get("effort")))
+        )
+
+    return candidates
+
+
+def _extra_headers(base_url: str) -> dict:
+    """Headers OpenCode expects from clients that aren't OpenCode itself.
+
+    The OpenCode Go provider rejects requests without a stable session ID, and
+    asks clients to identify themselves instead of using a generic SDK UA.
+    See https://opencode.ai/docs/console/go#where-can-i-use-it
+    """
+    if "opencode.ai" not in base_url:
+        return {}
+
+    global _session_id
+    if _session_id is None:
+        # One stable ID per process: every summary shares the same system
+        # prompt, so keeping it stable lets OpenCode cache the prefix.
+        _session_id = os.getenv("LLM_SESSION_ID", "").strip() or f"ses_{uuid.uuid4()}"
+
+    return {
+        "User-Agent": os.getenv("LLM_USER_AGENT", "").strip() or "wydt/0.1.0",
+        "x-opencode-session": _session_id,
+    }
+
+
+def _discover_lowest_cost_model() -> tuple[str | None, bool]:
+    """Query the /v1/models endpoint and pick the cheapest available chat model.
+
+    Returns (model_id, supports_reasoning_effort).
     """
     try:
+        api_key = _get_api_key()
+        if not api_key:
+            logger.warning(
+                "No API key set (OPENCODE_API_KEY / LLM_API_KEY); skipping model discovery"
+            )
+            return (None, False)
+
         from openai import OpenAI
 
-        api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return None
-
-        base_url = os.getenv("LLM_BASE_URL", "https://api.x.ai/v1").rstrip("/")
-        # Ensure proper /v1 suffix for x.ai
-        if "api.x.ai" in base_url and not base_url.rstrip("/").endswith("/v1"):
-            base_url = base_url.rstrip("/") + "/v1"
-
-        temp_client = OpenAI(api_key=api_key, base_url=base_url)
+        temp_client = OpenAI(
+            api_key=api_key,
+            base_url=_get_base_url(),
+            default_headers=_extra_headers(_get_base_url()),
+        )
         resp = temp_client.models.list()
-        ids = [m.id for m in getattr(resp, "data", [])]
-        if not ids:
-            return None
+        models = list(getattr(resp, "data", []))
+        if not models:
+            return (None, False)
 
-        logger.info(f"Discovered {len(ids)} models via API")
+        logger.info(f"Discovered {len(models)} models via API")
 
-        # Preference for lowest-cost models based on current xAI pricing.
-        # grok-build-0.1 is the cheapest ($1/$2). Then grok-4.3 and 4.20 variants
-        # (all ~$1.25/$2.50). Prioritize build first per request.
-        priority_checks = [
-            lambda i: "build" in i.lower() or "code-fast" in i.lower(),
-            lambda i: "grok-4.3" in i.lower(),
-            lambda i: "4.20" in i and "reasoning" in i.lower(),
-            lambda i: "grok-4.20-reasoning" in i.lower(),
-            lambda i: "4.20" in i and "non-reasoning" in i.lower(),
-            lambda i: "grok-4.20-non-reasoning" in i.lower(),
-            lambda i: "fast-non-reasoning" in i.lower(),
-            lambda i: "fast" in i.lower(),
-            lambda i: "non-reasoning" in i.lower(),
-            lambda i: "mini" in i.lower(),
-            lambda i: "grok-3" in i.lower(),
-        ]
+        candidates = _rank_candidates(models)
+        if not candidates:
+            logger.warning(
+                "No models with pricing info returned; falling back to the first listed model"
+            )
+            return (models[0].id, False)
 
-        for check in priority_checks:
-            for model_id in ids:
-                if check(model_id):
-                    logger.info(f"Auto-selected lowest-cost model: {model_id}")
-                    return model_id
+        # Free-tier chat models only serve OpenCode itself, so skip them unless
+        # explicitly allowed.
+        paid = [c for c in candidates if c[1] > 0]
+        if paid:
+            pool = paid
+        else:
+            logger.warning(
+                "Only free-tier models are available to this key; set "
+                "LLM_ALLOW_FREE_MODELS=1 to try them anyway (they may be rejected)"
+            )
+            if not _allow_free_models():
+                return (None, False)
+            pool = candidates
 
-        # Fallback: prefer grok-4.3 or any recent grok-4.x if present, else first
-        for preferred in ("grok-4.3", "grok-4.20", "grok-4"):
-            for model_id in ids:
-                if preferred in model_id.lower():
-                    return model_id
-        return ids[0] if ids else None
+        cheapest = min(pool, key=lambda c: c[1])
+        logger.info(
+            f"Auto-selected lowest-cost model: {cheapest[0]} "
+            f"(${cheapest[1]:g}/1M in+out tokens)"
+        )
+        return (cheapest[0], cheapest[2])
     except Exception as e:
         logger.warning(f"Could not discover models list for lowest-cost selection: {e}")
-        return None
+        return (None, False)
 
 
 def _get_client():
@@ -77,19 +173,19 @@ def _get_client():
     if _client is None:
         from openai import OpenAI
 
-        api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
-        base_url = os.getenv("LLM_BASE_URL", "").rstrip("/")
-
-        if base_url.startswith("http://"):
-            base_url = base_url.replace("http://", "https://", 1)
-            logger.warning(f"Changed HTTP to HTTPS for LLM_BASE_URL: {base_url}")
+        api_key = _get_api_key()
+        base_url = _get_base_url()
 
         logger.info("Initializing OpenAI client:")
         logger.info(f"  base_url: {base_url}")
         logger.info(f"  model: {_get_model()}")
         logger.info(f"  api_key: {api_key[:10] if api_key else 'None'}...")
 
-        _client = OpenAI(api_key=api_key, base_url=base_url)
+        _client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers=_extra_headers(base_url),
+        )
     return _client
 
 
@@ -102,32 +198,64 @@ def _get_model():
     # available to this account via the models API. This is the recommended
     # way to "always use the lowest end model".
     global _cheapest_model
+    global _reasoning_effort_supported
     if _cheapest_model is None:
-        discovered = _discover_lowest_cost_model()
+        discovered, supports_reasoning_effort = _discover_lowest_cost_model()
         if discovered:
             _cheapest_model = discovered
+            _reasoning_effort_supported = supports_reasoning_effort
         else:
-            # Sensible fallback based on base URL
-            base_url = os.getenv("LLM_BASE_URL", "")
-            if "x.ai" in base_url:
-                _cheapest_model = "grok-build-0.1"
-            else:
-                _cheapest_model = "gpt-4o-mini"
+            # Sensible fallback if discovery is unavailable
+            _cheapest_model = (
+                "gpt-5-nano" if "opencode.ai" in _get_base_url() else "gpt-4o-mini"
+            )
+            _reasoning_effort_supported = False
     return _cheapest_model
+
+
+def _system_prompt(key: str) -> str:
+    """Load a prompt from the database, falling back to the built-in default."""
+    return _prompt(key)
+
+
+def _user_prompt(key: str, **values: str) -> str:
+    """Load a user-message template and fill its placeholders."""
+    template = _prompt(key)
+    try:
+        from .models import render_prompt
+
+        return render_prompt(template, **values)
+    except Exception as e:
+        logger.warning(f"Could not render prompt '{key}': {e}")
+        return template
+
+
+def _prompt(key: str) -> str:
+    """Load a prompt from the database, falling back to the built-in default."""
+    try:
+        from .models import Prompt
+
+        return Prompt.get_text(key)
+    except Exception as e:
+        logger.warning(f"Could not load prompt '{key}' from DB, using default: {e}")
+        from .models import DEFAULT_PROMPTS
+
+        return DEFAULT_PROMPTS.get(key, ("", ""))[1]
 
 
 def _get_reasoning_effort(model: str) -> str | None:
     """For basic summaries, use 'low' reasoning effort on models that support it.
+
     This reduces cost and latency for simple tasks like journal summaries.
-    Returns None for models that don't use/support it (e.g. build variants).
+    Support is only known for auto-discovered models, so an explicit LLM_MODEL
+    gets none unless LLM_REASONING_EFFORT says otherwise.
     """
-    m = model.lower()
-    if "build" in m or "code-fast" in m:
+    override = os.getenv("LLM_REASONING_EFFORT", "").strip().lower()
+    if override in ("none", "off", "false"):
         return None
-    # grok-4.3, grok-4.20 etc. support reasoning_effort
-    if any(k in m for k in ["4.3", "4.20", "grok-4"]):
-        return "low"
-    return None
+    if override:
+        return override
+    return "low" if _reasoning_effort_supported else None
 
 
 def generate_summary_and_keywords(content: str) -> tuple[str, str, str | None]:
@@ -143,26 +271,21 @@ def generate_summary_and_keywords(content: str) -> tuple[str, str, str | None]:
             "messages": [
                 {
                     "role": "system",
-                    "content": """You are a helpful assistant that processes daily journal entries.
-Analyze the entry and provide:
-1. A brief 1-2 sentence summary of what the person did that day
-2. A comma-separated list of 3-8 relevant keywords/tags for searching
-
-Format your response as:
-SUMMARY: <summary text>
-KEYWORDS: <keyword1>, <keyword2>, <keyword3>, ...""",
+                    "content": _system_prompt("daily_summary"),
                 },
                 {
                     "role": "user",
-                    "content": f"Process this daily log:\n\n{content}",
+                    "content": _user_prompt("daily_summary_user", content=content),
                 },
             ],
-            "max_tokens": 150,
+            # Reasoning models spend part of the budget on thinking tokens, so
+            # leave room for the actual answer.
+            "max_tokens": 1000,
         }
         if effort := _get_reasoning_effort(model):
-            kwargs["extra_body"] = {"reasoning_effort": effort}
+            kwargs["reasoning_effort"] = effort
         response = client.chat.completions.create(**kwargs)
-        result = response.choices[0].message.content.strip()
+        result = (response.choices[0].message.content or "").strip()
 
         summary = ""
         keywords = ""
@@ -213,12 +336,18 @@ def generate_weekly_summary(logs_data: list[dict]) -> dict:
         model = _get_model()
         logger.info(f"Generating weekly summary with model: {model}")
 
-        # Format logs for the prompt
+        # Format logs for the prompt, using the editable per-entry template
+        from .models import render_prompt
+
+        log_template = _prompt("weekly_log_entry")
         logs_text = "\n\n".join(
-            [
-                f"Date: {log['date']}\nSummary: {log['summary']}\nContent: {log['content'][:500]}"
-                for log in logs_data
-            ]
+            render_prompt(
+                log_template,
+                date=log["date"],
+                summary=log["summary"],
+                content=log["content"][: _WEEKLY_LOG_CHARS],
+            )
+            for log in logs_data
         )
 
         kwargs = {
@@ -226,39 +355,19 @@ def generate_weekly_summary(logs_data: list[dict]) -> dict:
             "messages": [
                 {
                     "role": "system",
-                    "content": """You are a helpful assistant that creates weekly summaries from daily journal entries.
-Analyze the week's entries and provide:
-
-1. A brief 2-3 sentence overall summary of the week
-2. Key themes or focus areas for the week (comma-separated list)
-3. Major accomplishments or completed tasks (bullet points, one per line)
-4. Notable highlights or interesting moments (bullet points, one per line)
-5. Any ticket numbers, IDs, references, or identifiers mentioned (e.g., #123, ABC-456, PR-789, etc.) - comma-separated list
-
-Be concise but informative. Look for patterns across the week.
-
-Format your response exactly as:
-SUMMARY: <overall summary text>
-THEMES: <theme1>, <theme2>, ...
-ACCOMPLISHMENTS:
-- <accomplishment 1>
-- <accomplishment 2>
-HIGHLIGHTS:
-- <highlight 1>
-- <highlight 2>
-REFERENCES: <reference1>, <reference2>, ... (or "None" if no identifiers found)""",
+                    "content": _system_prompt("weekly_summary"),
                 },
                 {
                     "role": "user",
-                    "content": f"Create a weekly summary from these daily entries:\n\n{logs_text}",
+                    "content": _user_prompt("weekly_summary_user", logs=logs_text),
                 },
             ],
-            "max_tokens": 500,
+            "max_tokens": 2000,
         }
         if effort := _get_reasoning_effort(model):
-            kwargs["extra_body"] = {"reasoning_effort": effort}
+            kwargs["reasoning_effort"] = effort
         response = client.chat.completions.create(**kwargs)
-        result = response.choices[0].message.content.strip()
+        result = (response.choices[0].message.content or "").strip()
 
         # Parse the response
         output = {

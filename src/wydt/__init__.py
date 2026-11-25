@@ -8,7 +8,14 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 
-from .models import db, DailyLog, WeeklySummary
+from .models import (
+    db,
+    DailyLog,
+    WeeklySummary,
+    Prompt,
+    DEFAULT_PROMPTS,
+    PROMPT_PLACEHOLDERS,
+)
 from .llm import generate_summary_and_keywords, generate_weekly_summary
 from .auth import require_auth
 
@@ -49,6 +56,7 @@ def create_app():
     with app.app_context():
         db.create_all()
         _ensure_summary_error_columns()
+        Prompt.ensure_defaults()
 
     @app.context_processor
     def inject_today():
@@ -134,6 +142,54 @@ def create_app():
             return redirect(url_for("index"))
 
         return render_template("entry.html", log=log, prev_log=prev_log, prev_date=prev_date, next_date=next_date)
+
+    @app.route("/prompts", methods=["GET", "POST"])
+    @require_auth
+    def prompts():
+        """Edit the LLM prompts stored in the database."""
+        if request.method == "POST":
+            for prompt in Prompt.all_prompts():
+                submitted = request.form.get(f"content__{prompt.key}")
+                if submitted is None:
+                    continue
+                prompt.content = submitted
+                prompt.updated_at = datetime.utcnow()
+            db.session.commit()
+
+            if request.headers.get("HX-Request"):
+                return render_template(
+                    "prompts_partial.html",
+                    prompts=Prompt.all_prompts(),
+                    placeholders=PROMPT_PLACEHOLDERS,
+                    saved=True,
+                )
+            return redirect(url_for("index"))
+
+        return render_template(
+            "prompts.html",
+            prompts=Prompt.all_prompts(),
+            placeholders=PROMPT_PLACEHOLDERS,
+        )
+
+    @app.route("/prompts/reset/<prompt_key>", methods=["POST"])
+    @require_auth
+    def reset_prompt(prompt_key):
+        """Restore one prompt to its built-in default."""
+        if prompt_key in DEFAULT_PROMPTS:
+            Prompt.reset_to_default(prompt_key)
+        else:
+            from flask import abort
+
+            abort(404)
+
+        if request.headers.get("HX-Request"):
+            return render_template(
+                "prompts_partial.html",
+                prompts=Prompt.all_prompts(),
+                placeholders=PROMPT_PLACEHOLDERS,
+                reset=True,
+            )
+        return redirect(url_for("prompts"))
 
     @app.route("/api/logs", methods=["GET"])
     @require_auth

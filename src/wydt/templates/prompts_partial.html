@@ -1,0 +1,53 @@
+{% if saved or reset %}
+<div class="alert alert-success py-2 px-3 small" id="prompt-status">
+    {% if saved %}Prompts saved.{% else %}Prompt restored to default.{% endif %}
+</div>
+{% endif %}
+
+<form method="POST" action="/prompts" hx-post="/prompts" hx-target="#prompts-editor" hx-swap="innerHTML">
+    {% for prompt in prompts %}
+    <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span class="date-header">{{ prompt.label }}</span>
+            <span class="text-muted small">
+                {% if prompt.is_default %}default{% else %}customized{% endif %}
+                {% if not prompt.is_default %}
+                <button
+                    type="button"
+                    class="btn btn-sm btn-outline-danger ms-2"
+                    hx-post="/prompts/reset/{{ prompt.key }}"
+                    hx-target="#prompts-editor"
+                    hx-swap="innerHTML"
+                    hx-confirm="Restore this prompt to its default text?"
+                >Reset</button>
+                {% endif %}
+            </span>
+        </div>
+        <div class="card-body">
+            {% set holes = placeholders.get(prompt.key, []) %}
+            <textarea
+                name="content__{{ prompt.key }}"
+                class="form-control font-monospace"
+                rows="{% if holes %}6{% else %}14{% endif %}"
+                placeholder="Prompt text..."
+            >{{ prompt.content }}</textarea>
+            <div class="form-text">
+                {% if holes %}
+                Replaces <code>{% for h in holes %}{{ '{' }}{{ h }}{{ '}' }}{% if not loop.last %}, {% endif %}{% endfor %}</code> when sent.
+                Leave it empty to fall back to the built-in default.
+                {% else %}
+                Sent as the system message. Leave it empty to fall back to the built-in default.
+                {% endif %}
+                {% if prompt.updated_at %}
+                Last saved {{ prompt.updated_at.strftime('%b %d, %Y %H:%M') }}.
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="d-flex justify-content-end gap-2">
+        <a href="/" class="btn btn-outline-secondary">Cancel</a>
+        <button type="submit" class="btn btn-primary">Save prompts</button>
+    </div>
+</form>
